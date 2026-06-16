@@ -59,6 +59,11 @@ class PqcRrcExtension : public Object
      */
     void SetPdcpLayer(Ptr<PqcPdcpLayer> pdcp);
 
+    /**
+     * \brief Set the crypto mode for evaluation.
+     */
+    void SetCryptoMode(CryptoMode mode);
+
     // ═══════════════════════════════════════════════════
     // UE-side methods (initiator)
     // ═══════════════════════════════════════════════════
@@ -140,6 +145,7 @@ class PqcRrcExtension : public Object
     Time m_totalProcessingTime;
     Time m_handshakeStartTime;
 
+    CryptoMode m_cryptoMode;
     bool m_enableAuth; // Whether ML-DSA authentication is enabled
 };
 

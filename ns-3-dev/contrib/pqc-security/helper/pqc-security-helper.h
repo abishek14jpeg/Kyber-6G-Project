@@ -51,7 +51,7 @@ class PqcSecurityHelper
 
     void SetKyberLevel(CrystalsKyberKem::SecurityLevel level);
     void SetMlDsaLevel(MlDsaSigner::Level level);
-    void SetEnableHybridKem(bool enable);
+    void SetCryptoMode(CryptoMode mode);
     void SetEnableAuthentication(bool enable);
     void SetEnableQuantumAttacker(bool enable);
     void SetEnableForwardSecrecy(bool enable);
@@ -82,6 +82,11 @@ class PqcSecurityHelper
      */
     void RunQuantumAttack();
 
+    /**
+     * \brief Purge the MEC cache for a specific UE node.
+     */
+    void PurgeCache(uint32_t ueIndex);
+
     // ── Accessors ──
 
     Ptr<PqcMetricsCollector> GetMetricsCollector() const;
@@ -106,7 +111,7 @@ class PqcSecurityHelper
     // Configuration
     CrystalsKyberKem::SecurityLevel m_kyberLevel;
     MlDsaSigner::Level m_mlDsaLevel;
-    bool m_enableHybrid;
+    CryptoMode m_cryptoMode;
     bool m_enableAuth;
     bool m_enableQuantumAttacker;
     bool m_enableForwardSecrecy;
@@ -127,6 +132,7 @@ class PqcSecurityHelper
 
     std::vector<UePqcContext> m_ueContexts;
     std::vector<GnbPqcContext> m_gnbContexts;
+    std::vector<bool> m_mecCache;
 
     Ptr<PqcMetricsCollector> m_metricsCollector;
     Ptr<QuantumAttacker> m_quantumAttacker;

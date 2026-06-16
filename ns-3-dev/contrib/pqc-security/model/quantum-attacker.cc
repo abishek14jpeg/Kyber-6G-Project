@@ -140,13 +140,13 @@ QuantumAttacker::AttemptRetroactiveDecryption()
         NS_LOG_INFO("  ── IMSI " << imsi << " ──");
 
         // Step 1: Break classical ECDH (quantum computer can do this)
-        bool ecdhBroken = true; // Quantum computer breaks X25519
+        // ecdhBroken = true always for a quantum adversary
         NS_LOG_INFO("    X25519 ECDH: BROKEN by quantum computer ✗");
 
         if (hs.isHybrid)
         {
             // Step 2: Attempt to break Kyber (quantum computer CANNOT do this)
-            bool kyberBroken = false; // Lattice-based, quantum-resistant
+            // kyberBroken = false always; lattice-based, quantum-resistant
             NS_LOG_INFO("    Kyber-768:   SECURE against quantum computer ✓");
 
             // Hybrid KEM: need BOTH to derive session key

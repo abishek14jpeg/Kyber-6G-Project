@@ -20,6 +20,17 @@ namespace pqc
 {
 
 /**
+ * \brief The cryptographic mode mapping for experimental evaluation.
+ */
+enum class CryptoMode
+{
+    ECC_ONLY,           ///< X25519 ECDH baseline
+    KYBER_ONLY,         ///< CRYSTALS-Kyber baseline
+    KYBER_CACHED,       ///< CRYSTALS-Kyber with PSK caching optimization
+    HYBRID_KYBER_ECDH   ///< Proposed hybrid scheme
+};
+
+/**
  * \brief Hybrid KEM combining X25519 ECDH + CRYSTALS-Kyber.
  *
  * Implements the dual-KEM combiner:
@@ -73,6 +84,11 @@ class HybridKemCombiner : public Object
     ~HybridKemCombiner() override;
 
     /**
+     * \brief Set the cryptographic mode to use for evaluation.
+     */
+    void SetCryptoMode(CryptoMode mode);
+
+    /**
      * \brief Generate both ECDH and Kyber key pairs (initiator step).
      */
     HybridKeyPair GenerateKeyPair();
@@ -113,6 +129,7 @@ class HybridKemCombiner : public Object
     TracedCallback<uint32_t> m_totalEncapsSizeTrace;
 
   private:
+    CryptoMode m_cryptoMode;
     Ptr<X25519Ecdh> m_ecdh;
     Ptr<CrystalsKyberKem> m_kyber;
     Ptr<UniformRandomVariable> m_rng;

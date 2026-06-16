@@ -107,7 +107,7 @@ AesGcmCipher::Encrypt(const std::vector<uint8_t>& plaintext)
     // "Encrypted" plaintext (in simulation, we keep it readable)
     result.ciphertext.insert(result.ciphertext.end(), plaintext.begin(), plaintext.end());
 
-    // Append simulated GCM tag (16 zero bytes — placeholder)
+    // Append simulated GCM tag (16 bytes of 0xAA — stands in for real GHASH output)
     result.ciphertext.insert(result.ciphertext.end(), TAG_SIZE, 0xAA);
 
     // Compute timing

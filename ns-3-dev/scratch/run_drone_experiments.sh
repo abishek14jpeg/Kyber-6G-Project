@@ -1,8 +1,10 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════
 # Automated Experiment Execution Workflow
-# Military Drone Swarm Quantum-Resilient Simulation
+# Hybrid CRYSTALS-Kyber/X25519 Experimental Evaluation
 # ═══════════════════════════════════════════════════════════
+
+set -e
 
 echo "Starting automated PQC vs ECC Drone Swarm evaluation..."
 
@@ -12,42 +14,75 @@ if [ ! -f "ns3" ]; then
     exit 1
 fi
 
-# 1. Scalability and Saturation Analysis (ECC Baseline)
-echo "
------------------------------------
-[1/3] Running ECC Baseline Models
------------------------------------"
-./ns3 run "drone-swarm-pqc-sim --crypto=ECC --nodes=10"
-./ns3 run "drone-swarm-pqc-sim --crypto=ECC --nodes=25"
-./ns3 run "drone-swarm-pqc-sim --crypto=ECC --nodes=50"
+mkdir -p results
 
-# 2. Scalability and Saturation Analysis (Kyber Post-Quantum)
-echo "
------------------------------------
-[2/3] Running Kyber-768 Models
------------------------------------"
-./ns3 run "drone-swarm-pqc-sim --crypto=Kyber768 --nodes=10"
-./ns3 run "drone-swarm-pqc-sim --crypto=Kyber768 --nodes=25"
-./ns3 run "drone-swarm-pqc-sim --crypto=Kyber768 --nodes=50"
-
-# 3. High Mobility & Optimization (Adaptive Caching)
-echo "
------------------------------------
-[3/3] Running High Mobility Optimization
------------------------------------"
-./ns3 run "drone-swarm-pqc-sim --crypto=Kyber768 --nodes=50 --speed=25.0 --caching=1"
-
-# 4. Analytics and Comparative Visualization
-echo "
------------------------------------
-[Analytics] Generating Comparative Visualizations
------------------------------------"
-python3 scratch/plot_drone_metrics.py
+MODES=("ecc" "kyber" "kyber_cached" "hybrid")
+NODES=(10 28 56)
+TOTAL=$(( ${#MODES[@]} * ${#NODES[@]} ))
+COUNT=0
+FAILED=0
 
 echo "
-=============================================================
-Workflow Complete! 
-Check the 'analysis_plots/' directory for theoretical models, 
-throughput comparisons, M/M/1 queuing validation, and 
-security strength charts.
-============================================================="
+═══════════════════════════════════════════════════════════
+  Evaluation Matrix: ${#MODES[@]} modes × ${#NODES[@]} sizes = $TOTAL runs
+  Modes:  ${MODES[*]}
+  Sizes:  ${NODES[*]}
+═══════════════════════════════════════════════════════════"
+
+for mode in "${MODES[@]}"; do
+    for node in "${NODES[@]}"; do
+        COUNT=$((COUNT + 1))
+        CSV="results/${mode}_${node}nodes.csv"
+        echo ""
+        echo "[$COUNT/$TOTAL] Mode=$mode  Drones=$node  -> $CSV"
+        if ./ns3 run "drone-swarm-pqc-sim --cryptoMode=$mode --nodes=$node" 2>&1; then
+            echo "  ✓ $CSV written"
+        else
+            echo "  ✗ FAILED (mode=$mode, nodes=$node)"
+            FAILED=$((FAILED + 1))
+        fi
+    done
+done
+
+# ── Validation ──
+echo ""
+echo "═══════════════════════════════════════════════════════════"
+echo "  RESULTS VALIDATION"
+echo "═══════════════════════════════════════════════════════════"
+
+REQUIRED_FIELDS="packet_delivery_ratio,crypto_computation_us,security_strength_score,security_latency_efficiency,handshake_latency_us,queueing_delay_us,e2e_app_latency_ms,packet_sent_events,packet_received_events"
+MISSING=0
+
+for csv in results/*.csv; do
+    [ -f "$csv" ] || continue
+    # Skip timeseries files
+    echo "$csv" | grep -q "_timeseries" && continue
+    echo -n "  Checking $csv ... "
+    OK=true
+    for field in $(echo "$REQUIRED_FIELDS" | tr ',' ' '); do
+        if ! grep -q "$field" "$csv" 2>/dev/null; then
+            echo ""
+            echo "    MISSING field: $field"
+            OK=false
+            MISSING=$((MISSING + 1))
+        fi
+    done
+    if $OK; then
+        echo "✓ all fields present"
+    fi
+done
+
+echo ""
+echo "═══════════════════════════════════════════════════════════"
+echo "  SUMMARY"
+echo "  Completed: $((COUNT - FAILED)) / $COUNT"
+echo "  Failed:    $FAILED"
+echo "  Missing fields: $MISSING"
+echo "═══════════════════════════════════════════════════════════"
+
+if [ $FAILED -eq 0 ] && [ $MISSING -eq 0 ]; then
+    echo "  ✓ All experiments passed validation."
+else
+    echo "  ✗ Some experiments had issues. Review output above."
+    exit 1
+fi

@@ -51,6 +51,7 @@ HybridKemCombiner::GetTypeId()
 }
 
 HybridKemCombiner::HybridKemCombiner()
+    : m_cryptoMode(CryptoMode::HYBRID_KYBER_ECDH)
 {
     m_ecdh = CreateObject<X25519Ecdh>();
     m_kyber = CreateObject<CrystalsKyberKem>();
@@ -63,17 +64,30 @@ HybridKemCombiner::~HybridKemCombiner()
 {
 }
 
+void
+HybridKemCombiner::SetCryptoMode(CryptoMode mode)
+{
+    m_cryptoMode = mode;
+}
+
 HybridKemCombiner::HybridKeyPair
 HybridKemCombiner::GenerateKeyPair()
 {
     HybridKeyPair hkp;
 
-    // Generate both key pairs
-    hkp.ecdhKeys = m_ecdh->KeyGen();
-    hkp.kyberKeys = m_kyber->KeyGen();
+    hkp.totalGenerationTime = Seconds(0);
 
-    // Total time is the sum (sequential generation)
-    hkp.totalGenerationTime = hkp.ecdhKeys.generationTime + hkp.kyberKeys.generationTime;
+    if (m_cryptoMode == CryptoMode::ECC_ONLY || m_cryptoMode == CryptoMode::HYBRID_KYBER_ECDH)
+    {
+        hkp.ecdhKeys = m_ecdh->KeyGen();
+        hkp.totalGenerationTime += hkp.ecdhKeys.generationTime;
+    }
+    
+    if (m_cryptoMode == CryptoMode::KYBER_ONLY || m_cryptoMode == CryptoMode::KYBER_CACHED || m_cryptoMode == CryptoMode::HYBRID_KYBER_ECDH)
+    {
+        hkp.kyberKeys = m_kyber->KeyGen();
+        hkp.totalGenerationTime += hkp.kyberKeys.generationTime;
+    }
 
     NS_LOG_INFO("Hybrid KeyGen: ECDH(32B) + Kyber(" << hkp.kyberKeys.publicKey.size()
                                                      << "B) total_pk="
@@ -109,24 +123,31 @@ HybridKemCombiner::Encapsulate(const std::vector<uint8_t>& initiatorEcdhPk,
 {
     HybridEncapsResult result;
 
-    // 1. Generate our own ECDH ephemeral key and compute shared secret
-    auto ecdhKp = m_ecdh->KeyGen();
-    auto ecdhSs = m_ecdh->ComputeSharedSecret(ecdhKp.secretKey, initiatorEcdhPk);
+    result.totalTime = Seconds(0);
+    std::vector<uint8_t> ecdhSecret, kyberSecret;
 
-    // 2. Encapsulate with Kyber toward the initiator's public key
-    auto kyberResult = m_kyber->Encapsulate(initiatorKyberPk);
+    if (m_cryptoMode == CryptoMode::ECC_ONLY || m_cryptoMode == CryptoMode::HYBRID_KYBER_ECDH)
+    {
+        auto ecdhKp = m_ecdh->KeyGen();
+        auto ecdhSs = m_ecdh->ComputeSharedSecret(ecdhKp.secretKey, initiatorEcdhPk);
+        result.ecdhPublicKey = ecdhKp.publicKey;
+        ecdhSecret = ecdhSs.sharedSecret;
+        result.totalTime += ecdhKp.generationTime + ecdhSs.computeTime;
+    }
 
-    // 3. Combine shared secrets via HKDF
-    result.ecdhPublicKey = ecdhKp.publicKey;
-    result.kyberCiphertext = kyberResult.ciphertext;
-    result.combinedSecret = SimulatedHkdf(ecdhSs.sharedSecret, kyberResult.sharedSecret);
+    if (m_cryptoMode == CryptoMode::KYBER_ONLY || m_cryptoMode == CryptoMode::KYBER_CACHED || m_cryptoMode == CryptoMode::HYBRID_KYBER_ECDH)
+    {
+        auto kyberResult = m_kyber->Encapsulate(initiatorKyberPk);
+        result.kyberCiphertext = kyberResult.ciphertext;
+        kyberSecret = kyberResult.sharedSecret;
+        result.totalTime += kyberResult.encapsulationTime;
+    }
 
-    // Total time: ECDH keygen + DH + Kyber encaps + HKDF (~negligible)
-    result.totalTime = ecdhKp.generationTime + ecdhSs.computeTime +
-                       kyberResult.encapsulationTime + MicroSeconds(5); // HKDF overhead
+    result.combinedSecret = SimulatedHkdf(ecdhSecret, kyberSecret);
+    result.totalTime += MicroSeconds(5); // HKDF overhead
 
     NS_LOG_INFO("Hybrid Encaps: ecdh_pk=32B + kyber_ct="
-                << kyberResult.ciphertext.size()
+                << result.kyberCiphertext.size()
                 << "B total_wire=" << result.TotalWireSize()
                 << "B time=" << result.totalTime.As(Time::US));
 
@@ -141,16 +162,25 @@ HybridKemCombiner::Decapsulate(const HybridKeyPair& myKeys,
                                 const std::vector<uint8_t>& responderEcdhPk,
                                 const std::vector<uint8_t>& kyberCiphertext)
 {
-    // 1. ECDH shared secret
-    auto ecdhSs = m_ecdh->ComputeSharedSecret(myKeys.ecdhKeys.secretKey, responderEcdhPk);
+    Time totalTime = Seconds(0);
+    std::vector<uint8_t> ecdhSecret, kyberSecret;
 
-    // 2. Kyber decapsulation
-    auto kyberResult = m_kyber->Decapsulate(myKeys.kyberKeys.secretKey, kyberCiphertext);
+    if (m_cryptoMode == CryptoMode::ECC_ONLY || m_cryptoMode == CryptoMode::HYBRID_KYBER_ECDH)
+    {
+        auto ecdhSs = m_ecdh->ComputeSharedSecret(myKeys.ecdhKeys.secretKey, responderEcdhPk);
+        ecdhSecret = ecdhSs.sharedSecret;
+        totalTime += ecdhSs.computeTime;
+    }
 
-    // 3. Combine via HKDF
-    auto combined = SimulatedHkdf(ecdhSs.sharedSecret, kyberResult.sharedSecret);
+    if (m_cryptoMode == CryptoMode::KYBER_ONLY || m_cryptoMode == CryptoMode::KYBER_CACHED || m_cryptoMode == CryptoMode::HYBRID_KYBER_ECDH)
+    {
+        auto kyberResult = m_kyber->Decapsulate(myKeys.kyberKeys.secretKey, kyberCiphertext);
+        kyberSecret = kyberResult.sharedSecret;
+        totalTime += kyberResult.decapsulationTime;
+    }
 
-    Time totalTime = ecdhSs.computeTime + kyberResult.decapsulationTime + MicroSeconds(5);
+    auto combined = SimulatedHkdf(ecdhSecret, kyberSecret);
+    totalTime += MicroSeconds(5);
 
     NS_LOG_INFO("Hybrid Decaps: time=" << totalTime.As(Time::US));
     m_hybridDecapsTrace(totalTime);

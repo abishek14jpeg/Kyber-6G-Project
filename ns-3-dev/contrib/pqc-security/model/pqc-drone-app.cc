@@ -111,9 +111,9 @@ PqcDroneApp::StartApplication()
 void
 PqcDroneApp::StopApplication()
 {
-    if (m_sendTelemetryEvent.IsRunning()) Simulator::Cancel(m_sendTelemetryEvent);
-    if (m_sendNavEvent.IsRunning()) Simulator::Cancel(m_sendNavEvent);
-    if (m_sendCmdEvent.IsRunning()) Simulator::Cancel(m_sendCmdEvent);
+    if (m_sendTelemetryEvent.IsPending()) Simulator::Cancel(m_sendTelemetryEvent);
+    if (m_sendNavEvent.IsPending()) Simulator::Cancel(m_sendNavEvent);
+    if (m_sendCmdEvent.IsPending()) Simulator::Cancel(m_sendCmdEvent);
 
     if (m_socket)
     {
@@ -182,6 +182,10 @@ PqcDroneApp::TransmitPacket(PacketType type, uint32_t payloadSize)
         m_socket->Send(p);
     }
 
+    if (m_metrics)
+    {
+        m_metrics->RecordPacketSent();
+    }
     m_packetsSent++;
 }
 
@@ -224,6 +228,7 @@ PqcDroneApp::HandleRead(Ptr<Socket> socket)
                 m_metrics->RecordE2eApplicationLatency(e2eLatency);
                 // Assume throughput bytes are the actual payload (excluding GCM tag/nonce overhead added by network)
                 m_metrics->RecordThroughputBytes(result.plaintext.size()); 
+                m_metrics->RecordPacketReceived();
             }
         }
         else
@@ -233,6 +238,7 @@ PqcDroneApp::HandleRead(Ptr<Socket> socket)
             {
                 m_metrics->RecordE2eApplicationLatency(e2eLatency);
                 m_metrics->RecordThroughputBytes(packet->GetSize());
+                m_metrics->RecordPacketReceived();
             }
         }
     }

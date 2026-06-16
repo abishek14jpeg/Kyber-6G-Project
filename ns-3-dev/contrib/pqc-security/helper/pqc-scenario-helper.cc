@@ -15,6 +15,8 @@
 #include "ns3/log.h"
 #include "ns3/nr-module.h"
 #include "ns3/point-to-point-helper.h"
+#include "ns3/box.h"
+#include "ns3/gauss-markov-mobility-model.h"
 #include "ns3/pointer.h"
 #include "ns3/uinteger.h"
 
@@ -47,8 +49,8 @@ PqcScenarioHelper::SetupNrStack(NodeContainer& gnbNodes,
     result.numGnbs = gnbNodes.GetN();
     result.numUes = ueNodes.GetN();
 
-    // Increase RLC buffer
     Config::SetDefault("ns3::LteRlcUm::MaxTxBufferSize", UintegerValue(999999999));
+    // Config::SetDefault("ns3::NrHelper::UseIdealRrc", BooleanValue(false)); // Not valid in 5G-LENA NrHelper
 
     // Create helpers
     result.epcHelper = CreateObject<NrPointToPointEpcHelper>();
@@ -57,6 +59,20 @@ PqcScenarioHelper::SetupNrStack(NodeContainer& gnbNodes,
 
     result.nrHelper->SetBeamformingHelper(idealBeamformingHelper);
     result.nrHelper->SetEpcHelper(result.epcHelper);
+
+    // Setup MEC Backhaul
+    NodeContainer mecNode;
+    mecNode.Create(1);
+    PointToPointHelper p2pMec;
+    p2pMec.SetDeviceAttribute("DataRate", DataRateValue(DataRate("10Gbps")));
+    p2pMec.SetChannelAttribute("Delay", TimeValue(MilliSeconds(2.0)));
+    p2pMec.Install(result.epcHelper->GetPgwNode(), mecNode.Get(0));
+
+
+    // Setup Handover Algorithm
+    // result.nrHelper->SetHandoverAlgorithmType("ns3::NrA3RsrpHandoverAlgorithm");
+    // result.nrHelper->SetHandoverAlgorithmAttribute("Hysteresis", DoubleValue(3.0));
+    // result.nrHelper->SetHandoverAlgorithmAttribute("TimeToTrigger", TimeValue(MilliSeconds(256)));
 
     // Spectrum configuration
     CcBwpCreator ccBwpCreator;
@@ -67,8 +83,9 @@ PqcScenarioHelper::SetupNrStack(NodeContainer& gnbNodes,
     OperationBandInfo band = ccBwpCreator.CreateOperationBandContiguousCc(bandConf);
 
     Config::SetDefault("ns3::ThreeGppChannelModel::UpdatePeriod", TimeValue(MilliSeconds(0)));
-    result.nrHelper->SetChannelConditionModelAttribute("UpdatePeriod",
-                                                        TimeValue(MilliSeconds(0)));
+    // result.nrHelper->SetChannelConditionModelAttribute("TypeId", StringValue("ns3::ThreeGppChannelConditionModel"));
+    // result.nrHelper->SetChannelConditionModelAttribute("Scenario", StringValue("UMa-AV"));
+    // result.nrHelper->SetPathlossModel("ns3::ThreeGppPropagationLossModel");
     result.nrHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(false));
     result.nrHelper->InitializeOperationBand(&band);
 
@@ -98,9 +115,16 @@ PqcScenarioHelper::SetupNrStack(NodeContainer& gnbNodes,
     result.nrHelper->SetGnbBwpManagerAlgorithmAttribute("NGBR_LOW_LAT_EMBB", UintegerValue(0));
     result.nrHelper->SetUeBwpManagerAlgorithmAttribute("NGBR_LOW_LAT_EMBB", UintegerValue(0));
 
-    // Install NR stack
+    // Install NR stack (gNB Internet stack is installed internally by EpcHelper::AddEnb)
     result.gnbDevices = result.nrHelper->InstallGnbDevice(gnbNodes, allBwps);
     result.ueDevices = result.nrHelper->InstallUeDevice(ueNodes, allBwps);
+
+    // Enable X2/Xn interfaces AFTER InstallGnbDevice (gNBs need Ipv4 from AddEnb first)
+    for (uint32_t i = 0; i < gnbNodes.GetN(); ++i) {
+        for (uint32_t j = i + 1; j < gnbNodes.GetN(); ++j) {
+            result.epcHelper->AddX2Interface(gnbNodes.Get(i), gnbNodes.Get(j));
+        }
+    }
 
     // Assign random streams
     int64_t randomStream = 1;
@@ -126,7 +150,8 @@ PqcScenarioHelper::SetupNrStack(NodeContainer& gnbNodes,
         DynamicCast<NrUeNetDevice>(*it)->UpdateConfig();
     }
 
-    // Internet stack + IPs for UEs
+    // Internet stack on UEs — MUST be after InstallUeDevice (per NR examples)
+    // Do NOT install on gnbNodes — EpcHelper::AddEnb already does it
     InternetStackHelper internet;
     internet.Install(ueNodes);
 
@@ -182,9 +207,15 @@ PqcScenarioHelper::CreateDenseUrbanScenario(uint32_t numUesPerGnb,
     gnbMobility.SetPositionAllocator(gnbPositions);
     gnbMobility.Install(gnbNodes);
 
-    // UE placement: uniform random within each cell
+    // UE placement: Gauss-Markov mobility
     MobilityHelper ueMobility;
-    ueMobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+    ueMobility.SetMobilityModel("ns3::GaussMarkovMobilityModel",
+        "Bounds", BoxValue(Box(-5000, 5000, -5000, 5000, 80, 80)),
+        "TimeStep", TimeValue(Seconds(0.5)),
+        "Alpha", DoubleValue(0.85),
+        "MeanVelocity", StringValue("ns3::UniformRandomVariable[Min=0.0|Max=25.0]"),
+        "MeanDirection", StringValue("ns3::UniformRandomVariable[Min=0.0|Max=6.283185307]"),
+        "MeanPitch", StringValue("ns3::UniformRandomVariable[Min=0.0|Max=0.0]"));
 
     Ptr<ListPositionAllocator> uePositions = CreateObject<ListPositionAllocator>();
     Ptr<UniformRandomVariable> rng = CreateObject<UniformRandomVariable>();
@@ -200,7 +231,7 @@ PqcScenarioHelper::CreateDenseUrbanScenario(uint32_t numUesPerGnb,
             double theta = rng->GetValue(0, 2.0 * M_PI);
             double x = gnbPos.x + r * std::cos(theta);
             double y = gnbPos.y + r * std::sin(theta);
-            uePositions->Add(Vector(x, y, ueHeight));
+            uePositions->Add(Vector(x, y, 80.0)); // Initial position at altitude 80m
         }
     }
 

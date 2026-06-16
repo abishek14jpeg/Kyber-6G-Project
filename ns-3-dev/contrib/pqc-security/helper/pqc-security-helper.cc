@@ -19,7 +19,7 @@ NS_LOG_COMPONENT_DEFINE("PqcSecurityHelper");
 PqcSecurityHelper::PqcSecurityHelper()
     : m_kyberLevel(CrystalsKyberKem::KYBER_768),
       m_mlDsaLevel(MlDsaSigner::ML_DSA_65),
-      m_enableHybrid(true),
+      m_cryptoMode(CryptoMode::HYBRID_KYBER_ECDH),
       m_enableAuth(true),
       m_enableQuantumAttacker(false),
       m_enableForwardSecrecy(true)
@@ -33,7 +33,7 @@ PqcSecurityHelper::~PqcSecurityHelper()
 
 void PqcSecurityHelper::SetKyberLevel(CrystalsKyberKem::SecurityLevel level) { m_kyberLevel = level; }
 void PqcSecurityHelper::SetMlDsaLevel(MlDsaSigner::Level level) { m_mlDsaLevel = level; }
-void PqcSecurityHelper::SetEnableHybridKem(bool enable) { m_enableHybrid = enable; }
+void PqcSecurityHelper::SetCryptoMode(CryptoMode mode) { m_cryptoMode = mode; }
 void PqcSecurityHelper::SetEnableAuthentication(bool enable) { m_enableAuth = enable; }
 void PqcSecurityHelper::SetEnableQuantumAttacker(bool enable) { m_enableQuantumAttacker = enable; }
 void PqcSecurityHelper::SetEnableForwardSecrecy(bool enable) { m_enableForwardSecrecy = enable; }
@@ -47,7 +47,7 @@ PqcSecurityHelper::Install(NetDeviceContainer gnbDevices, NetDeviceContainer ueD
     NS_LOG_INFO("╚══════════════════════════════════════════════════════╝");
     NS_LOG_INFO("  Kyber level: " << m_kyberLevel);
     NS_LOG_INFO("  ML-DSA level: " << m_mlDsaLevel);
-    NS_LOG_INFO("  Hybrid KEM: " << (m_enableHybrid ? "ENABLED" : "DISABLED"));
+    NS_LOG_INFO("  Crypto Mode: " << static_cast<int>(m_cryptoMode));
     NS_LOG_INFO("  Authentication: " << (m_enableAuth ? "ENABLED" : "DISABLED"));
     NS_LOG_INFO("  Quantum Attacker: " << (m_enableQuantumAttacker ? "ENABLED" : "DISABLED"));
     NS_LOG_INFO("  Forward Secrecy: " << (m_enableForwardSecrecy ? "ENABLED" : "DISABLED"));
@@ -60,6 +60,7 @@ PqcSecurityHelper::Install(NetDeviceContainer gnbDevices, NetDeviceContainer ueD
 
         ctx.rrcExtension = CreateObject<PqcRrcExtension>();
         ctx.rrcExtension->SetRole(PqcRrcExtension::GNB_ROLE);
+        ctx.rrcExtension->SetCryptoMode(m_cryptoMode);
         ctx.rrcExtension->SetAttribute("EnableAuthentication", BooleanValue(m_enableAuth));
 
         ctx.pdcpLayer = CreateObject<PqcPdcpLayer>();
@@ -77,6 +78,7 @@ PqcSecurityHelper::Install(NetDeviceContainer gnbDevices, NetDeviceContainer ueD
 
         ctx.rrcExtension = CreateObject<PqcRrcExtension>();
         ctx.rrcExtension->SetRole(PqcRrcExtension::UE_ROLE);
+        ctx.rrcExtension->SetCryptoMode(m_cryptoMode);
         ctx.rrcExtension->SetAttribute("EnableAuthentication", BooleanValue(m_enableAuth));
 
         ctx.pdcpLayer = CreateObject<PqcPdcpLayer>();
@@ -89,6 +91,7 @@ PqcSecurityHelper::Install(NetDeviceContainer gnbDevices, NetDeviceContainer ueD
         }
 
         m_ueContexts.push_back(ctx);
+        m_mecCache.push_back(true); // Cache initialized to true
 
         NS_LOG_INFO("  UE #" << i << ": PQC RRC Extension + PDCP layer"
                     << (m_enableForwardSecrecy ? " + Handover Manager" : "") << " installed");
@@ -158,9 +161,44 @@ PqcSecurityHelper::DoHandshake(uint32_t ueIndex, uint32_t gnbIndex)
     // Step 3: UE completes key exchange
     auto sessionKeys = ueCtx.rrcExtension->CompleteKeyExchange(setupPayload);
 
+    // Apply MEC Cache Processing Delay
+    bool isCached = m_mecCache[ueIndex];
+    Time mecDelay = isCached ? MicroSeconds(10) : MicroSeconds(1920); // 0.01ms vs 1.92ms
+    setupPayload.processingDelay += mecDelay;
+
+    // Simulate Crypto Power Spike overhead (1.80W for 5.76ms, 0.30W DRAM penalty)
+    // Energy = Power * Time = (1.80W + 0.30W) * 0.00576s = 0.012096 Joules = 12096 MicroJoules
+    m_metricsCollector->RecordCryptoEnergyMicroJoules(12096.0);
+    m_metricsCollector->RecordCryptoMemoryBytes(1184); // Kyber payload approx
+
     // Record metrics
-    m_metricsCollector->RecordHandshakeLatency(
-        ueCtx.rrcExtension->GetHandshakeProcessingTime());
+    Time totalCryptoTime = requestPayload.processingDelay + 
+                           setupPayload.processingDelay + 
+                           ueCtx.rrcExtension->GetHandshakeProcessingTime();
+
+    double securityScore = 0.0;
+    switch (m_cryptoMode)
+    {
+        case CryptoMode::ECC_ONLY:
+            securityScore = 128.0; // Assuming X25519 is ~128 bits
+            break;
+        case CryptoMode::KYBER_ONLY:
+        case CryptoMode::KYBER_CACHED:
+        case CryptoMode::HYBRID_KYBER_ECDH:
+            securityScore = 203.0; // Kyber-768 quantum security strength
+            break;
+    }
+
+    m_metricsCollector->RecordSecurityScore(securityScore);
+    m_metricsCollector->RecordCryptoComputationTime(totalCryptoTime);
+
+    // Efficiency Score: Security Strength / Latency (ms)
+    // We will use totalCryptoTime for the efficiency ratio calculation for now.
+    double latencyMs = totalCryptoTime.GetMilliSeconds();
+    if (latencyMs > 0)
+    {
+        m_metricsCollector->RecordEfficiencyScore(securityScore / latencyMs);
+    }
 
     // Record in quantum attacker if enabled
     if (m_quantumAttacker)
@@ -168,7 +206,7 @@ PqcSecurityHelper::DoHandshake(uint32_t ueIndex, uint32_t gnbIndex)
         QuantumAttacker::CapturedHandshake ch;
         ch.requestPayload = requestPayload;
         ch.setupPayload = setupPayload;
-        ch.isHybrid = m_enableHybrid;
+        ch.isHybrid = (m_cryptoMode == CryptoMode::HYBRID_KYBER_ECDH);
         ch.captureTime = Simulator::Now();
         m_quantumAttacker->CaptureHandshake(ueIndex, ch);
     }
@@ -181,6 +219,16 @@ PqcSecurityHelper::DoHandshake(uint32_t ueIndex, uint32_t gnbIndex)
 
     NS_LOG_INFO("═══ HANDSHAKE COMPLETE ═══");
     NS_LOG_INFO("");
+}
+
+void
+PqcSecurityHelper::PurgeCache(uint32_t ueIndex)
+{
+    if (ueIndex < m_mecCache.size())
+    {
+        m_mecCache[ueIndex] = false;
+        NS_LOG_INFO("MEC Cache purged for UE #" << ueIndex);
+    }
 }
 
 void

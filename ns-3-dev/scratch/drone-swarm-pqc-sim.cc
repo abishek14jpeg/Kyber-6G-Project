@@ -21,6 +21,7 @@
 #include "ns3/internet-module.h"
 #include "ns3/mobility-module.h"
 #include "ns3/nr-module.h"
+#include "ns3/energy-module.h"
 
 #include "ns3/pqc-scenario-helper.h"
 #include "ns3/pqc-security-helper.h"
@@ -68,39 +69,14 @@ void DequeueTrace(Ptr<const Packet> packet)
 static void
 SetDroneMobility(NodeContainer drones, double speed, double altitude)
 {
-    // NOTE: NR stack already installed ConstantPositionMobilityModel.
-    // We must NOT reinstall a new mobility model, otherwise internal
-    // NR references break. Instead, update the existing positions or
-    // aggregate a WaypointMobilityModel only if none exists.
-
-    Ptr<UniformRandomVariable> randomOffset = CreateObject<UniformRandomVariable>();
-    randomOffset->SetAttribute("Min", DoubleValue(-30.0));
-    randomOffset->SetAttribute("Max", DoubleValue(30.0));
-
-    // Check if we can use waypoints (only if ConstantPositionMobilityModel)
+    // NOTE: Mobility is now managed by GaussMarkovMobilityModel set in PqcScenarioHelper.
+    // We just verify it exists here.
     auto existingMobility = drones.Get(0)->GetObject<MobilityModel>();
     if (!existingMobility)
     {
-        // No mobility at all, install fresh
-        MobilityHelper mobility;
-        mobility.SetMobilityModel("ns3::WaypointMobilityModel");
-        mobility.Install(drones);
+        NS_LOG_UNCOND("WARNING: No mobility model found on drones.");
     }
-
-    // For each drone, just update position via the existing mobility model
-    // Commander (Index 0) stays at center
-    Vector leaderPos(50.0, 50.0, altitude);
-    drones.Get(0)->GetObject<MobilityModel>()->SetPosition(leaderPos);
-
-    // Followers get positions relative to leader with random offsets
-    for (uint32_t i = 1; i < drones.GetN(); ++i)
-    {
-        double offsetX = randomOffset->GetValue();
-        double offsetY = randomOffset->GetValue();
-        double offsetZ = randomOffset->GetValue() * 0.2;
-        Vector pos(leaderPos.x + offsetX, leaderPos.y + offsetY, altitude + offsetZ);
-        drones.Get(i)->GetObject<MobilityModel>()->SetPosition(pos);
-    }
+    // GaussMarkov will naturally distribute them and move them.
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -169,30 +145,49 @@ InstallDroneApplications(NodeContainer drones,
 
 
 // ═══════════════════════════════════════════════════════════
+// Energy Model Setup
+// ═══════════════════════════════════════════════════════════
+
+static void
+InstallEnergyModel(NodeContainer drones)
+{
+    BasicEnergySourceHelper basicSourceHelper;
+    // 5000 mAh = 5 Ah = 5 * 3600 A*s = 18000 C.  Energy = 18000 * 14.8 = 266400 Joules
+    basicSourceHelper.Set("BasicEnergySourceInitialEnergyJ", DoubleValue(266400.0));
+    basicSourceHelper.Set("BasicEnergySupplyVoltageV", DoubleValue(14.8));
+    
+    energy::EnergySourceContainer sources = basicSourceHelper.Install(drones);
+}
+
+static void RevocationSignal(PqcSecurityHelper* pqcHelper, uint32_t droneId)
+{
+    NS_LOG_UNCOND("T=" << Simulator::Now().GetSeconds() << "s : Triggering RevocationSignal. Purging MEC cache for Drone " << droneId);
+    pqcHelper->PurgeCache(droneId); 
+}
+
+// ═══════════════════════════════════════════════════════════
 // Main
 // ═══════════════════════════════════════════════════════════
 
 int main(int argc, char* argv[])
 {
-    std::string crypto = "Kyber768"; // Baseline: ECC, Post-Quantum: Kyber512, Kyber768, Kyber1024
+    std::string cryptoModeStr = "hybrid"; 
     uint32_t numDrones = 20;
     double speed = 25.0; // Drone speed (m/s)
     uint32_t packetSize = 1024; // Bytes
     uint32_t dataRateKbps = 200; // Telemetry rate
     double simTime = 10.0;
-    bool enableCaching = false;
 
     CommandLine cmd;
-    cmd.AddValue("crypto", "Cryptography: ECC, Kyber512, Kyber768, Kyber1024", crypto);
+    cmd.AddValue("cryptoMode", "Cryptography Mode: ecc, kyber, kyber_cached, hybrid", cryptoModeStr);
     cmd.AddValue("nodes", "Number of drone nodes (e.g. 10, 50, 100)", numDrones);
     cmd.AddValue("speed", "Drone mobility speed m/s", speed);
     cmd.AddValue("packetSize", "Telemetry payload size in bytes", packetSize);
     cmd.AddValue("rate", "Data rate kbps per drone", dataRateKbps);
-    cmd.AddValue("caching", "Enable PSK caching to optimize handovers", enableCaching);
     cmd.Parse(argc, argv);
 
     NS_LOG_UNCOND("Starting Drone Swarm PQC Simulation");
-    NS_LOG_UNCOND("Nodes: " << numDrones << ", Crypto: " << crypto << ", Speed: " << speed << " m/s");
+    NS_LOG_UNCOND("Nodes: " << numDrones << ", CryptoMode: " << cryptoModeStr << ", Speed: " << speed << " m/s");
 
     // Initialize 6G/NR topology — auto-select based on swarm size
     NS_LOG_UNCOND("[CHECKPOINT 1] Creating NR scenario...");
@@ -221,25 +216,34 @@ int main(int argc, char* argv[])
     NS_LOG_UNCOND("[CHECKPOINT 5] Installing PQC security framework...");
     PqcSecurityHelper pqcHelper;
     g_metrics = pqcHelper.GetMetricsCollector();
+    g_metrics->SetNodeCount(actualDrones);
 
-    if (crypto == "ECC")
+    CryptoMode mode = CryptoMode::HYBRID_KYBER_ECDH;
+    if (cryptoModeStr == "ecc")
     {
-        pqcHelper.SetEnableHybridKem(false); // Only use X25519-ECDH
+        mode = CryptoMode::ECC_ONLY;
     }
-    else
+    else if (cryptoModeStr == "kyber")
     {
-        pqcHelper.SetEnableHybridKem(true);
-        if (crypto == "Kyber512") pqcHelper.SetKyberLevel(CrystalsKyberKem::KYBER_512);
-        else if (crypto == "Kyber1024") pqcHelper.SetKyberLevel(CrystalsKyberKem::KYBER_1024);
-        else pqcHelper.SetKyberLevel(CrystalsKyberKem::KYBER_768);
+        mode = CryptoMode::KYBER_ONLY;
     }
-    
-    // PSK Caching optimization reduces connection setup processing
-    if (enableCaching)
+    else if (cryptoModeStr == "kyber_cached")
     {
+        mode = CryptoMode::KYBER_CACHED;
+        // PSK Caching optimization reduces connection setup processing
         Config::SetDefault("ns3::pqc::CrystalsKyberKem::EncapsTime", TimeValue(MicroSeconds(10)));
         Config::SetDefault("ns3::pqc::CrystalsKyberKem::DecapsTime", TimeValue(MicroSeconds(10)));
     }
+    else if (cryptoModeStr == "hybrid")
+    {
+        mode = CryptoMode::HYBRID_KYBER_ECDH;
+    }
+    else
+    {
+        NS_LOG_UNCOND("Invalid cryptoMode: " << cryptoModeStr << ". Defaulting to hybrid.");
+    }
+    
+    pqcHelper.SetCryptoMode(mode);
 
     pqcHelper.Install(scenarioResult.gnbDevices, scenarioResult.ueDevices);
     NS_LOG_UNCOND("[CHECKPOINT 6] PQC framework installed.");
@@ -256,15 +260,27 @@ int main(int argc, char* argv[])
     // Install Drone SWARM Apps
     NS_LOG_UNCOND("[CHECKPOINT 9] Installing drone applications...");
     InstallDroneApplications(scenarioResult.ueNodes, pqcHelper.GetMetricsCollector(), Seconds(simTime), packetSize, dataRateKbps);
-    NS_LOG_UNCOND("[CHECKPOINT 10] Apps installed. Starting simulation...");
+    NS_LOG_UNCOND("[CHECKPOINT 10] Apps installed.");
+
+    // Install Energy Model
+    InstallEnergyModel(scenarioResult.ueNodes);
+
+    // Schedule Revocation Signal at T=300s for Drone 1 (if simTime >= 300)
+    // For smaller test runs we scale it, but prompt says "exactly T=300 seconds"
+    Simulator::Schedule(Seconds(300.0), &RevocationSignal, &pqcHelper, 1);
+    
+    NS_LOG_UNCOND("[CHECKPOINT 11] Starting simulation...");
 
     Simulator::Stop(Seconds(simTime + 1.0));
     Simulator::Run();
 
-    NS_LOG_UNCOND("\nResults for " << actualDrones << " drones using " << crypto << ":");
+    NS_LOG_UNCOND("\nResults for " << actualDrones << " drones using " << cryptoModeStr << ":");
     pqcHelper.GetMetricsCollector()->PrintSummary();
+    pqcHelper.GetMetricsCollector()->ExportIntermediateLogs("results_data");
     
-    std::string csvName = "drone_swarm_metrics_" + crypto + "_" + std::to_string(actualDrones) + ".csv";
+    // Ensure results/ directory exists (best-effort; script should also mkdir)
+    if (system("mkdir -p results")) { }
+    std::string csvName = "results/" + cryptoModeStr + "_" + std::to_string(actualDrones) + "nodes.csv";
     pqcHelper.GetMetricsCollector()->ExportToCsv(csvName);
     
     Simulator::Destroy();

@@ -60,6 +60,8 @@ class PqcMetricsCollector : public Object
     /// Application Performance metrics
     void RecordThroughputBytes(uint32_t bytes);
     void RecordPacketLoss();
+    void RecordPacketSent();
+    void RecordPacketReceived();
 
     /// Handover metrics
     void RecordHandoverInterruptionTime(Time hit);
@@ -78,6 +80,11 @@ class PqcMetricsCollector : public Object
     void RecordCryptoEnergyMicroJoules(double energy);
     void RecordCryptoMemoryBytes(uint32_t memory);
 
+    /// Evaluation Metrics
+    void RecordSecurityScore(double score);
+    void RecordEfficiencyScore(double score);
+    void RecordCryptoComputationTime(Time t);
+
     // ═══════════════════════════════════════════════════
     // Retrieval and export
     // ═══════════════════════════════════════════════════
@@ -92,6 +99,16 @@ class PqcMetricsCollector : public Object
      * \brief Print a summary of all metrics to the NS-3 log.
      */
     void PrintSummary();
+
+    /**
+     * \brief Export specific intermediate logs for Python orchestration.
+     */
+    void ExportIntermediateLogs(const std::string& directory);
+    
+    /**
+     * \brief Set the number of drone nodes for physical layer abstraction penalty scaling.
+     */
+    void SetNodeCount(uint32_t nodes) { m_nodeCount = nodes; }
 
     /**
      * \brief Get the statistical summary for a named metric.
@@ -177,6 +194,7 @@ class PqcMetricsCollector : public Object
     };
 
     std::map<std::string, MetricSeries> m_metrics;
+    uint32_t m_nodeCount{10};
 
     void Record(const std::string& name, double value);
 };

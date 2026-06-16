@@ -62,6 +62,7 @@ PqcRrcExtension::GetTypeId()
 
 PqcRrcExtension::PqcRrcExtension()
     : m_role(UE_ROLE),
+      m_cryptoMode(CryptoMode::HYBRID_KYBER_ECDH),
       m_enableAuth(true)
 {
     m_hybridKem = CreateObject<HybridKemCombiner>();
@@ -83,6 +84,16 @@ void
 PqcRrcExtension::SetPdcpLayer(Ptr<PqcPdcpLayer> pdcp)
 {
     m_pdcpLayer = pdcp;
+}
+
+void
+PqcRrcExtension::SetCryptoMode(CryptoMode mode)
+{
+    m_cryptoMode = mode;
+    if (m_hybridKem)
+    {
+        m_hybridKem->SetCryptoMode(mode);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
